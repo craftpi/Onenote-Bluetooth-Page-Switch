@@ -2,19 +2,67 @@
 #include <BleKeyboard.h>
 #include <NimBLEDevice.h> 
 #include <WiFi.h> 
+#include <Preferences.h> // Zum dauerhaften Speichern
 
 // --- KONFIGURATION ---
 BleKeyboard bleKeyboard("OneNote Remote", "DeinName", 100);
+Preferences preferences;
+
+// UUIDs für den Konfigurations-Kanal (Zufällig generiert)
+#define CONFIG_SERVICE_UUID "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
+#define CONFIG_CHAR_UUID    "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 
 // PINS
-const int buttonNextPin = 25; // Weckt via ext0
-const int buttonPrevPin = 32; // Weckt via ext1
+const int buttonNextPin = 25; 
+const int buttonPrevPin = 32; 
 const int batteryPin = 36; 
 
-const unsigned long SLEEP_TIMEOUT = 60000*5; // 5 Minuten Inaktivität bis Deep Sleep
+const unsigned long SLEEP_TIMEOUT = 60000 * 5; // 5 Minuten wach bleiben für Config
 unsigned long lastActivityTime = 0;
-
 int pendingAction = 0;
+
+// Variablen für die Tasten (werden aus Speicher geladen)
+uint8_t nextKeyMod = KEY_LEFT_CTRL;
+uint8_t nextKeyCode = KEY_PAGE_DOWN;
+uint8_t prevKeyMod = KEY_LEFT_CTRL;
+uint8_t prevKeyCode = KEY_PAGE_UP;
+
+// --- CALLBACK FÜR BLUETOOTH CONFIG ---
+class ConfigCallbacks: public NimBLECharacteristicCallbacks {
+    void onWrite(NimBLECharacteristic *pCharacteristic) {
+        std::string value = pCharacteristic->getValue();
+        if (value.length() > 0) {
+            String command = String(value.c_str());
+            Serial.println("Config Empfangen: " + command);
+            
+            // Format: "N:128:217" (Next:Mod:Code) oder "P:128:214" (Prev:Mod:Code)
+            if (command.startsWith("N:")) {
+                int firstColon = command.indexOf(':');
+                int secondColon = command.lastIndexOf(':');
+                if (firstColon > 0 && secondColon > firstColon) {
+                    nextKeyMod = command.substring(firstColon + 1, secondColon).toInt();
+                    nextKeyCode = command.substring(secondColon + 1).toInt();
+                    preferences.putUChar("modNext", nextKeyMod);
+                    preferences.putUChar("codeNext", nextKeyCode);
+                    Serial.println("NEXT Taste gespeichert!");
+                }
+            }
+            else if (command.startsWith("P:")) {
+                int firstColon = command.indexOf(':');
+                int secondColon = command.lastIndexOf(':');
+                if (firstColon > 0 && secondColon > firstColon) {
+                    prevKeyMod = command.substring(firstColon + 1, secondColon).toInt();
+                    prevKeyCode = command.substring(secondColon + 1).toInt();
+                    preferences.putUChar("modPrev", prevKeyMod);
+                    preferences.putUChar("codePrev", prevKeyCode);
+                    Serial.println("PREV Taste gespeichert!");
+                }
+            }
+            // Wach bleiben, weil der User gerade konfiguriert
+            lastActivityTime = millis();
+        }
+    }
+};
 
 // --- HILFSFUNKTIONEN ---
 
@@ -43,26 +91,15 @@ int getBatteryPercentage() {
 void goToDeepSleep() {
   debug("Gute Nacht! Gehe in Deep Sleep.");
   bleKeyboard.end(); 
-  
-  // Weck-Trigger scharfschalten
   esp_sleep_enable_ext0_wakeup((gpio_num_t)buttonNextPin, 0); 
   esp_sleep_enable_ext1_wakeup((1ULL << buttonPrevPin), ESP_EXT1_WAKEUP_ALL_LOW);
-  
   esp_deep_sleep_start();
 }
 
-void sendNext() {
-  debug("Sende: NEXT");
-  bleKeyboard.press(KEY_LEFT_CTRL);
-  bleKeyboard.press(KEY_PAGE_DOWN);
-  delay(50);
-  bleKeyboard.releaseAll();
-}
-
-void sendPrev() {
-  debug("Sende: PREV");
-  bleKeyboard.press(KEY_LEFT_CTRL);
-  bleKeyboard.press(KEY_PAGE_UP);
+void sendKey(uint8_t modifier, uint8_t key) {
+  debug("Sende Taste: Mod=" + String(modifier) + " Key=" + String(key));
+  if (modifier != 0) bleKeyboard.press(modifier);
+  bleKeyboard.press(key);
   delay(50);
   bleKeyboard.releaseAll();
 }
@@ -75,28 +112,41 @@ void setup() {
   pinMode(buttonPrevPin, INPUT_PULLUP);
   analogReadResolution(12); 
 
-  esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
-  
-  if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT0) {
-      debug("Aufgewacht durch NEXT Taste -> Merke Aktion!");
-      pendingAction = 1; // 1 steht für NEXT
-  } 
-  else if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT1) {
-      debug("Aufgewacht durch PREV Taste -> Merke Aktion!");
-      pendingAction = 2; // 2 steht für PREV
-  } 
-  else {
-      debug("Normaler Start");
-      pendingAction = 0;
-  }
+  // 1. Tasten laden
+  preferences.begin("keyconf", false); 
+  nextKeyMod = preferences.getUChar("modNext", KEY_LEFT_CTRL);   
+  nextKeyCode = preferences.getUChar("codeNext", KEY_PAGE_DOWN); 
+  prevKeyMod = preferences.getUChar("modPrev", KEY_LEFT_CTRL);   
+  prevKeyCode = preferences.getUChar("codePrev", KEY_PAGE_UP);   
 
+  // 2. Aufwach-Grund prüfen
+  esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
+  if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT0) pendingAction = 1; 
+  else if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT1) pendingAction = 2; 
+  else pendingAction = 0;
+
+  // 3. Bluetooth Starten
   int startBatteryLevel = getBatteryPercentage();
   bleKeyboard.setBatteryLevel(startBatteryLevel, true); 
-
-  debug("Starte Bluetooth...");
   bleKeyboard.begin();
+
+  // 4. Config Service hinzufügen (NACH bleKeyboard.begin)
+  NimBLEServer* pServer = NimBLEDevice::getServer();
+  if (pServer) {
+      NimBLEService* pService = pServer->createService(CONFIG_SERVICE_UUID);
+      
+      // HIER WAR DER FEHLER: NIMBLE_PROPERTY::WRITE ist korrekt
+      NimBLECharacteristic* pChar = pService->createCharacteristic(
+                                       CONFIG_CHAR_UUID, 
+                                       NIMBLE_PROPERTY::WRITE
+                                    );
+      
+      pChar->setCallbacks(new ConfigCallbacks());
+      pService->start();
+  }
   
   lastActivityTime = millis();
+  debug("Bluetooth gestartet. Warte auf Verbindung...");
 }
 
 void loop() {
@@ -104,41 +154,35 @@ void loop() {
     goToDeepSleep();
   }
 
-  // --- LOGIK WENN VERBUNDEN ---
   if (bleKeyboard.isConnected()) {
-
+    // Aktion ausführen, falls wir gerade aufgewacht sind
     if (pendingAction != 0) {
-       debug("Verbindung steht! Führe gemerkte Aktion aus...");
-
-       delay(500); 
-
-       if (pendingAction == 1) sendNext();
-       if (pendingAction == 2) sendPrev();
-       
-       bleKeyboard.setBatteryLevel(getBatteryPercentage(), true);
-
+       delay(500); // Warten bis Windows bereit
+       if (pendingAction == 1) sendKey(nextKeyMod, nextKeyCode);
+       if (pendingAction == 2) sendKey(prevKeyMod, prevKeyCode);
+       bleKeyboard.setBatteryLevel(getBatteryPercentage(), true); // Notify True Fix
        pendingAction = 0;
-       
        lastActivityTime = millis();
     }
 
+    // Tasten manuell
     if(digitalRead(buttonNextPin) == LOW) {
-      sendNext();
-      bleKeyboard.setBatteryLevel(getBatteryPercentage(), true);
+      sendKey(nextKeyMod, nextKeyCode);
+      bleKeyboard.setBatteryLevel(getBatteryPercentage(), true); 
       lastActivityTime = millis(); 
       delay(300); 
     }
 
     if(digitalRead(buttonPrevPin) == LOW) {
-      sendPrev();
+      sendKey(prevKeyMod, prevKeyCode);
       bleKeyboard.setBatteryLevel(getBatteryPercentage(), true);
       lastActivityTime = millis(); 
       delay(300); 
     }
   } 
 
+  // Wenn Verbindung verloren, kurz wach bleiben für Reconnect, dann schlafen
   if (!bleKeyboard.isConnected()) {
-      lastActivityTime = millis(); 
-      if (millis() > 120000) goToDeepSleep();
+      if (millis() - lastActivityTime > 120000) goToDeepSleep(); 
   }
 }
