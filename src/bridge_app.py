@@ -4,32 +4,40 @@ import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog 
 import json
 import os
-import sys # type: ignore
+import sys
+import winreg # Für Autostart-Eintrag
 from bleak import BleakScanner, BleakClient
 import keyboard
 
 # --- IMPORT FIX ---
-# Wir nutzen try-except mit type: ignore, damit der Linter nicht meckert,
-# falls er die Library im Editor nicht sofort findet.
 HAS_AI = False
 try:
     from google import genai # type: ignore
     from google.genai import types # type: ignore
     HAS_AI = True
-except ImportError: # type: ignore
-    print("ACHTUNG: 'google-genai' ist nicht installiert. KI-Funktionen deaktiviert.") # type: ignore
+except ImportError:
+    print("ACHTUNG: 'google-genai' ist nicht installiert. KI-Funktionen deaktiviert.")
 
 # --- CONFIG ---
 SERVICE_UUID = "12345678-1234-1234-1234-1234567890ab"
 CHAR_BUTTON_UUID = "12345678-1234-1234-1234-1234567890ac"
 CHAR_BATTERY_UUID = "12345678-1234-1234-1234-1234567890ad"
-CONFIG_FILE = "remote_config.json"
+
+# Config Datei liegt immer im gleichen Ordner wie die Exe/Script
+if getattr(sys, 'frozen', False):
+    # Wenn als EXE ausgeführt
+    APP_DIR = os.path.dirname(sys.executable)
+else:
+    # Wenn als Skript ausgeführt
+    APP_DIR = os.path.dirname(os.path.abspath(__file__))
+
+CONFIG_FILE = os.path.join(APP_DIR, "remote_config.json")
 
 class BluetoothRemoteApp:
     def __init__(self, root):
         self.root = root
         self.root.title("OneNote Remote AI Bridge")
-        self.root.geometry("500x600")
+        self.root.geometry("500x650") # Etwas höher für Autostart Checkbox
         
         self.client = None
         self.connected = False
@@ -87,30 +95,78 @@ class BluetoothRemoteApp:
 
         # API Key
         frame_api = tk.LabelFrame(self.root, text="Google Gemini API Key", padx=10, pady=10)
-        frame_api.pack(fill="x", padx=20, pady=20)
+        frame_api.pack(fill="x", padx=20, pady=10)
         self.entry_api = tk.Entry(frame_api, show="*")
         self.entry_api.insert(0, self.config["api_key"])
         self.entry_api.pack(fill="x")
 
+        # --- AUTOSTART CHECKBOX ---
+        self.var_autostart = tk.BooleanVar()
+        self.var_autostart.set(self.is_autostart_enabled())
+        cb_autostart = tk.Checkbutton(self.root, text="Automatisch mit Windows starten", 
+                                      variable=self.var_autostart, command=self.toggle_autostart)
+        cb_autostart.pack(side="bottom", pady=15)
+
+
+    # --- AUTOSTART LOGIK ---
+    def is_autostart_enabled(self):
+        try:
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_READ)
+            winreg.QueryValueEx(key, "OneNoteRemoteBridge")
+            key.Close()
+            return True
+        except FileNotFoundError:
+            return False
+
+    def toggle_autostart(self):
+        app_name = "OneNoteRemoteBridge"
+        
+        # Ermittle Pfad zur Exe oder zum Skript
+        exe_path = sys.executable
+        if not getattr(sys, 'frozen', False):
+            # Wenn Skript: Wir nutzen pythonw.exe (ohne Konsole)
+            script_path = os.path.abspath(__file__)
+            exe_path = f'"{exe_path.replace("python.exe", "pythonw.exe")}" "{script_path}"'
+        else:
+            # Wenn EXE: Pfad in Anführungszeichen
+            exe_path = f'"{exe_path}"'
+
+        try:
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_ALL_ACCESS)
+            if self.var_autostart.get():
+                winreg.SetValueEx(key, app_name, 0, winreg.REG_SZ, exe_path)
+                messagebox.showinfo("Autostart", "Autostart aktiviert!\nDie App startet nun beim Login minimiert.")
+            else:
+                try:
+                    winreg.DeleteValue(key, app_name)
+                    messagebox.showinfo("Autostart", "Autostart deaktiviert!")
+                except FileNotFoundError:
+                    pass
+            key.Close()
+        except Exception as e:
+            messagebox.showerror("Fehler", f"Konnte Registry nicht ändern: {e}")
+            self.var_autostart.set(not self.var_autostart.get())
+
+
     def load_config(self):
         if os.path.exists(CONFIG_FILE):
             try:
-                with open(CONFIG_FILE, "r") as f: #type: ignore
+                with open(CONFIG_FILE, "r") as f:
                     self.config.update(json.load(f))
-            except Exception: #type: ignore
+            except Exception:
                 pass
 
     def save_config(self):
         self.config["btn1_action"] = self.entry_btn1.get()
         self.config["btn2_action"] = self.entry_btn2.get()
         self.config["api_key"] = self.entry_api.get()
-        with open(CONFIG_FILE, "w") as f: # type: ignore
+        with open(CONFIG_FILE, "w") as f:
             json.dump(self.config, f)
         messagebox.showinfo("Info", "Konfiguration gespeichert!")
 
     def ask_ai(self, btn_num):
         if not HAS_AI:
-            messagebox.showerror("Fehler", "Neue Google AI Library fehlt.\nBitte: pip install -r requirements.txt")
+            messagebox.showerror("Fehler", "Library fehlt. pip install google-genai")
             return
 
         api_key = self.entry_api.get()
@@ -122,7 +178,6 @@ class BluetoothRemoteApp:
         if not prompt: return
 
         try:
-            # Client Initialisierung (mit type ignore für den Linter)
             client = genai.Client(api_key=api_key) # type: ignore
             
             system_instruction = """
@@ -133,8 +188,6 @@ class BluetoothRemoteApp:
             'Lauter' -> 'volume up'
             'Copy' -> 'ctrl+c'
             'Screenshot' -> 'print screen'
-            'Play/Pause' -> 'play/pause media'
-            'Mute' -> 'volume mute'
             
             ONLY return the key string. No markdown, no explanations.
             """
@@ -142,21 +195,18 @@ class BluetoothRemoteApp:
             response_text = ""
             used_model = ""
 
-            print("Lade verfügbare Modelle...") # type: ignore
+            print("Lade verfügbare Modelle...")
             available_models = []
             
-            # --- AUTO DISCOVERY ---
             try:
-                # Wir holen die Modelle. type: ignore verhindert Linter-Fehler bei .models
                 for m in client.models.list(): # type: ignore
                     model_name = m.name
                     if "embedding" not in model_name and "gemini" in model_name:
                          available_models.append(model_name)
-            except Exception as e: # type: ignore
-                print(f"Warnung: Modell-Liste konnte nicht geladen werden ({e}). Nutze Fallback.") # type: ignore
+            except Exception as e:
+                print(f"Fallback Modelle nutzen: {e}")
                 available_models = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash-exp"]
 
-            # Sortierung: Flash > Pro > Exp
             def model_priority(name):
                 name = name.lower()
                 if "flash" in name and "exp" not in name: return 0  
@@ -168,11 +218,8 @@ class BluetoothRemoteApp:
 
             for model_name in available_models:
                 clean_name = model_name.replace("models/", "")
-                
                 try:
-                    print(f"Versuche Modell: {clean_name}...") # type: ignore
-                    
-                    # Generierung
+                    print(f"Versuche Modell: {clean_name}...")
                     response = client.models.generate_content( # type: ignore
                         model=clean_name,
                         contents=prompt,
@@ -181,18 +228,16 @@ class BluetoothRemoteApp:
                             temperature=0.1
                         )
                     )
-                    
                     if response.text:
                         response_text = response.text
                         used_model = clean_name
-                        print(f"✅ Erfolg mit {clean_name}!") # type: ignore
+                        print(f"✅ Erfolg mit {clean_name}!")
                         break 
-                except Exception as e: # type: ignore
-                    # Fehler ignorieren und nächstes Modell probieren
+                except Exception:
                     pass
             
             if not response_text:
-                raise Exception("Kein verfügbares Modell konnte die Anfrage bearbeiten.") # type: ignore
+                raise Exception("Kein verfügbares Modell antwortet.")
 
             key_code = response_text.strip().lower()
             key_code = key_code.replace('`', '').replace("'", "").replace('"', "")
@@ -207,8 +252,8 @@ class BluetoothRemoteApp:
             self.save_config()
             messagebox.showinfo("Erfolg", f"Taste konfiguriert auf: {key_code}\n(Modell: {used_model})")
             
-        except Exception as e: # type: ignore
-            messagebox.showerror("KI Fehler", f"Konnte KI nicht erreichen:\n{str(e)}") # type: ignore
+        except Exception as e:
+            messagebox.showerror("KI Fehler", f"Konnte KI nicht erreichen:\n{str(e)}")
 
     def start_async_loop(self):
         asyncio.set_event_loop(self.loop)
@@ -253,16 +298,11 @@ class BluetoothRemoteApp:
         try:
             val = int.from_bytes(data, byteorder="little")
             action = ""
-            
-            if val == 1:
-                action = self.config["btn1_action"]
-            elif val == 2:
-                action = self.config["btn2_action"]
+            if val == 1: action = self.config["btn1_action"]
+            elif val == 2: action = self.config["btn2_action"]
                 
-            print(f"Taste {val} gedrückt -> Trigger: {action}")
-            
-            if action:
-                keyboard.send(action)
+            print(f"Trigger: {action}")
+            if action: keyboard.send(action)
         except Exception as e:
             print(f"Key Error: {e}")
 
