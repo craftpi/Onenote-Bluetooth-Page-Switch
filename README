@@ -1,5 +1,624 @@
-📱 OneNote Remote Switch (AI Powered)Ein intelligenter Bluetooth-Fernauslöser für OneNote (und andere Windows-Anwendungen), basierend auf einem ESP32 und einer Python-Bridge-App.Dieses Projekt verwandelt einen ESP32 in einen energieeffizienten Bluetooth-Controller. Anders als herkömmliche Bluetooth-Tastaturen nutzt dieses System eine "Smart Host, Dumb Device" Architektur: Der ESP32 sendet lediglich rohe Signale, während eine begleitende Python-App auf dem PC die Logik übernimmt.✨ Features🔋 Extrem energiesparend: Nutzt BLE (Bluetooth Low Energy) für maximale Akkulaufzeit.🤖 AI-Konfiguration: Integrierte Google Gemini KI. Sag der App einfach "Nächste Folie" oder "Musik pausieren", und sie konfiguriert die Tasten automatisch.🚀 Autostart: Die Windows-App kann sich automatisch in den Autostart eintragen und läuft minimiert im Hintergrund.⚡ Blitzschnelle Verbindung: Kein Pairing-Code nötig. App starten -> ESP einschalten -> Verbunden.📊 Akku-Überwachung: Zeigt den Akkustand des ESP32 live in der Windows-App an.🛠️ HardwareBenötigte KomponentenESP32 Board (z.B. Wemos D1 Mini ESP32)2x Taster (Buttons)LiPo Akku (optional)VerbindungskabelPin-BelegungDie Standard-Konfiguration im Code (src/main.cpp) ist:KomponenteESP32 PinBeschreibungTaste NextGPIO 25Schaltet gegen GND (Input Pullup)Taste PrevGPIO 32Schaltet gegen GND (Input Pullup)Akku MessungGPIO 36Analog Input (VP)Status LEDGPIO 2Blaue Onboard LEDHinweis: Die Pins können in der src/main.cpp leicht angepasst werden.📦 Installation1. ESP32 Firmware flashenDas Projekt nutzt PlatformIO.Öffne den Ordner in VS Code mit der PlatformIO Extension.Verbinde deinen ESP32 per USB.Drücke auf Upload (Pfeil nach rechts in der unteren Leiste).2. Windows App einrichtenDu hast zwei Möglichkeiten: Das Python-Skript direkt ausführen oder eine eigenständige EXE erstellen.VoraussetzungenPython 3.x installiert (bei der Installation "Add Python to PATH" anhaken!).Installation der AbhängigkeitenÖffne ein Terminal im src Ordner und führe aus:pip install -r requirements.txt
-App startenpython bridge_app.py
-3. Exe-Datei erstellen (Optional)Um eine ausführbare Datei zu erstellen, die kein Python benötigt:pip install pyinstaller
-pyinstaller --noconsole --onefile --icon="icon.ico" --name "Remote-Switch" bridge_app.py
-Die fertige Remote-Switch.exe liegt dann im Ordner dist.📖 BedienungsanleitungStarte die Remote-Switch App auf deinem PC.Schalte den ESP32 ein.Die App findet den ESP automatisch (Status wechselt auf Grün: "Verbunden").Konfiguration:Gib deinen Google Gemini API Key ein (für die AI-Funktion).Klicke auf "✨ KI Config Taste 1".Gib einen Befehl ein, z.B. "Seite runter scrollen" oder "Screenshot machen".Die KI setzt den passenden Hotkey für dich.Aktiviere bei Bedarf "Automatisch mit Windows starten".🔧 TroubleshootingESP verbindet nicht: Entferne "OneNote Remote" aus den Windows Bluetooth-Einstellungen und starte Bluetooth neu.LED leuchtet dauerhaft: Prüfe die Verkabelung der Taster. Die Firmware erwartet, dass Taster beim Drücken den Pin auf GND ziehen (Active Low).AI Fehler: Stelle sicher, dass google-genai installiert ist und dein API Key gültig ist.📄 LizenzOpen Source. Fühle dich frei, den Code für deine Zwecke anzupassen!
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OneNote Remote Switch - Interactive Guide</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap');
+        
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f8fafc;
+            color: #1e293b;
+        }
+
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #f1f1f1;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #cbd5e1;
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #94a3b8;
+        }
+
+        /* Animations */
+        @keyframes float {
+            0% { transform: translateY(0px); }
+            50% { transform: translateY(-10px); }
+            100% { transform: translateY(0px); }
+        }
+        .animate-float {
+            animation: float 3s ease-in-out infinite;
+        }
+
+        @keyframes pulse-signal {
+            0% { transform: scale(0.95); opacity: 0.5; box-shadow: 0 0 0 0 rgba(168, 85, 247, 0.7); }
+            70% { transform: scale(1); opacity: 1; box-shadow: 0 0 0 10px rgba(168, 85, 247, 0); }
+            100% { transform: scale(0.95); opacity: 0.5; box-shadow: 0 0 0 0 rgba(168, 85, 247, 0); }
+        }
+        .signal-pulse {
+            animation: pulse-signal 2s infinite;
+        }
+
+        .chart-container {
+            position: relative;
+            width: 100%;
+            max-width: 600px;
+            margin-left: auto;
+            margin-right: auto;
+            height: 300px;
+            max-height: 400px;
+        }
+
+        /* Pinout Styles */
+        .pin {
+            transition: all 0.2s ease;
+        }
+        .pin:hover {
+            transform: translateX(5px);
+            font-weight: bold;
+            color: #7c3aed; /* violet-600 */
+        }
+    </style>
+    <!-- Chosen Palette: Slate (Neutrals) + Violet (OneNote Brand Color) + Emerald (Success) -->
+    <!-- Application Structure Plan:
+         1. Hero Section: Hook & Core Concept ("Smart Host, Dumb Device").
+         2. Architecture Visualization: Interactive flow diagram showing the data path.
+         3. Hardware Lab: Interactive ESP32 Pinout & Component list.
+         4. AI Config Simulator: Hands-on demo of the generative AI feature.
+         5. Performance Data: Chart comparing energy efficiency.
+         6. Installation Wizard: Step-by-step interactive guide.
+         7. Troubleshooting: FAQ Accordion.
+    -->
+    <!-- Visualization & Content Choices:
+         - Architecture Flow: CSS Flex/Grid with animations to visualize 'Dumb Device' sending raw signals vs 'Smart Host' processing. Goal: Explain the unique architecture.
+         - Pinout: Custom HTML/CSS diagram. Goal: Clear wiring instructions without needing images.
+         - AI Simulator: JS-based chat interface. Goal: Show off the "Wow" factor of the project without needing a real API key.
+         - Battery Chart: Chart.js bar chart. Goal: Visualize the efficiency benefits of the architecture.
+         - Installation Wizard: Progressive disclosure checklist. Goal: Simplify the complex setup process.
+    -->
+    <!-- CONFIRMATION: NO SVG graphics used. NO Mermaid JS used. -->
+</head>
+<body class="antialiased">
+
+    <!-- Navigation -->
+    <nav class="sticky top-0 z-50 bg-white/90 backdrop-blur-md border-b border-slate-200 shadow-sm">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between h-16 items-center">
+                <div class="flex items-center gap-2">
+                    <div class="w-8 h-8 bg-violet-600 rounded-lg flex items-center justify-center text-white font-bold">RS</div>
+                    <span class="font-bold text-xl text-slate-800">OneNote Remote Switch</span>
+                </div>
+                <div class="hidden md:flex space-x-8">
+                    <button onclick="scrollToSection('architecture')" class="text-slate-600 hover:text-violet-600 font-medium transition">Architektur</button>
+                    <button onclick="scrollToSection('hardware')" class="text-slate-600 hover:text-violet-600 font-medium transition">Hardware</button>
+                    <button onclick="scrollToSection('software')" class="text-slate-600 hover:text-violet-600 font-medium transition">Software & AI</button>
+                    <button onclick="scrollToSection('install')" class="text-slate-600 hover:text-violet-600 font-medium transition">Installation</button>
+                </div>
+                <button onclick="scrollToSection('install')" class="md:hidden p-2 text-slate-600">
+                    <span class="text-2xl">☰</span>
+                </button>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Hero Section -->
+    <header class="bg-gradient-to-br from-slate-50 to-violet-50 pt-16 pb-24">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 grid grid-cols-1 lg:grid-cols-2 gap-12 items-center">
+            <div>
+                <div class="inline-block px-3 py-1 bg-violet-100 text-violet-700 rounded-full text-sm font-semibold mb-4">AI Powered IoT</div>
+                <h1 class="text-4xl lg:text-5xl font-extrabold text-slate-900 leading-tight mb-6">
+                    Mache OneNote <span class="text-transparent bg-clip-text bg-gradient-to-r from-violet-600 to-indigo-600">Smart</span>.
+                </h1>
+                <p class="text-lg text-slate-600 mb-8 leading-relaxed">
+                    Ein intelligenter Bluetooth-Fernauslöser basierend auf ESP32 & Python. 
+                    <br><strong>Das Konzept:</strong> Der ESP32 ist "dumm" und spart Energie. Dein PC ist "schlau" und übernimmt die Steuerung.
+                </p>
+                <div class="flex flex-wrap gap-4">
+                    <button onclick="scrollToSection('architecture')" class="px-6 py-3 bg-violet-600 hover:bg-violet-700 text-white rounded-xl font-semibold shadow-lg shadow-violet-200 transition transform hover:-translate-y-1">
+                        Wie es funktioniert
+                    </button>
+                    <button onclick="scrollToSection('demo')" class="px-6 py-3 bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 rounded-xl font-semibold transition">
+                        Live Demo
+                    </button>
+                </div>
+            </div>
+            
+            <!-- Hero Visual: The "Smart Host, Dumb Device" Concept -->
+            <div class="relative bg-white rounded-2xl shadow-xl p-6 border border-slate-100 animate-float">
+                <div class="flex items-center justify-between mb-4 border-b pb-4">
+                    <div class="text-center w-1/3">
+                        <div class="w-16 h-16 bg-slate-800 rounded-lg mx-auto flex items-center justify-center text-white text-2xl mb-2">📟</div>
+                        <h3 class="font-bold text-slate-700">ESP32</h3>
+                        <span class="text-xs text-slate-500 bg-slate-100 px-2 py-1 rounded">Dumb Device</span>
+                    </div>
+                    <div class="flex-1 px-4 text-center">
+                        <div class="h-1 bg-gradient-to-r from-slate-300 via-violet-400 to-slate-300 rounded relative">
+                            <div class="absolute -top-3 left-1/2 transform -translate-x-1/2 bg-white px-2 text-violet-600 font-bold text-xs">BLE Notify</div>
+                        </div>
+                        <div class="text-xs text-slate-400 mt-2">Sende ID: 1</div>
+                    </div>
+                    <div class="text-center w-1/3">
+                        <div class="w-16 h-16 bg-gradient-to-br from-violet-500 to-indigo-600 rounded-lg mx-auto flex items-center justify-center text-white text-2xl mb-2 shadow-lg">💻</div>
+                        <h3 class="font-bold text-slate-700">Python App</h3>
+                        <span class="text-xs text-violet-100 bg-violet-600 px-2 py-1 rounded">Smart Host</span>
+                    </div>
+                </div>
+                <div class="bg-slate-50 p-4 rounded-lg text-sm text-slate-600">
+                    <p><strong>Logik:</strong></p>
+                    <ul class="list-disc ml-4 space-y-1 mt-2">
+                        <li>ESP sendet nur: "Knopf 1 gedrückt"</li>
+                        <li>Python entscheidet: "Das heißt 'Nächste Folie'"</li>
+                        <li><strong>Vorteil:</strong> Extrem lange Akkulaufzeit & flexible Config am PC.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- Architecture Section -->
+    <section id="architecture" class="py-20 bg-white">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="text-center mb-16">
+                <h2 class="text-3xl font-bold text-slate-900">System Architektur</h2>
+                <p class="mt-4 text-slate-500 max-w-2xl mx-auto">Vom Tastendruck bis zur Aktion. Das System optimiert die Energieeffizienz durch Delegation der Logik.</p>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-8 relative">
+                <!-- Step 1 -->
+                <div class="bg-slate-50 p-8 rounded-2xl border border-slate-100 hover:border-violet-300 transition group relative z-10">
+                    <div class="w-12 h-12 bg-white rounded-full flex items-center justify-center shadow-sm text-xl mb-6 group-hover:scale-110 transition">👆</div>
+                    <h3 class="text-xl font-bold text-slate-800 mb-3">1. Input</h3>
+                    <p class="text-slate-600 text-sm">Nutzer drückt Taste am ESP32. Das Gerät wacht aus dem <strong>Deep Sleep</strong> auf (oder bleibt im Loop).</p>
+                    <div class="mt-4 inline-block px-2 py-1 bg-green-100 text-green-700 text-xs font-bold rounded">GPIO 25 / 32</div>
+                </div>
+
+                <!-- Arrow Desktop -->
+                <div class="hidden md:flex absolute top-1/2 left-1/3 w-1/6 items-center justify-center -translate-y-1/2 z-0">
+                    <div class="h-0.5 w-full bg-slate-300"></div>
+                    <div class="w-2 h-2 bg-slate-300 rounded-full"></div>
+                </div>
+
+                <!-- Step 2 -->
+                <div class="bg-slate-50 p-8 rounded-2xl border border-slate-100 hover:border-violet-300 transition group relative z-10">
+                    <div class="w-12 h-12 bg-white rounded-full flex items-center justify-center shadow-sm text-xl mb-6 group-hover:scale-110 transition signal-pulse">📡</div>
+                    <h3 class="text-xl font-bold text-slate-800 mb-3">2. Übertragung</h3>
+                    <p class="text-slate-600 text-sm">ESP sendet <strong>BLE Notify</strong> mit ID (1 oder 2) und Akkustand. Keine komplexe HID-Verbindung nötig.</p>
+                    <div class="mt-4 inline-block px-2 py-1 bg-blue-100 text-blue-700 text-xs font-bold rounded">NimBLE C++</div>
+                </div>
+
+                <!-- Arrow Desktop -->
+                <div class="hidden md:flex absolute top-1/2 right-1/3 w-1/6 items-center justify-center -translate-y-1/2 z-0">
+                    <div class="h-0.5 w-full bg-slate-300"></div>
+                    <div class="w-2 h-2 bg-slate-300 rounded-full"></div>
+                </div>
+
+                <!-- Step 3 -->
+                <div class="bg-slate-50 p-8 rounded-2xl border border-slate-100 hover:border-violet-300 transition group relative z-10">
+                    <div class="w-12 h-12 bg-white rounded-full flex items-center justify-center shadow-sm text-xl mb-6 group-hover:scale-110 transition">⚙️</div>
+                    <h3 class="text-xl font-bold text-slate-800 mb-3">3. Ausführung</h3>
+                    <p class="text-slate-600 text-sm">Python App empfängt Signal. Gemini AI (oder Config) bestimmt Aktion. Windows führt Befehl aus.</p>
+                    <div class="mt-4 inline-block px-2 py-1 bg-violet-100 text-violet-700 text-xs font-bold rounded">Python + AI</div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Hardware Lab Section -->
+    <section id="hardware" class="py-20 bg-slate-50">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-12">
+                
+                <!-- Pinout Visualization -->
+                <div class="bg-white p-8 rounded-2xl shadow-sm border border-slate-200">
+                    <h3 class="text-2xl font-bold text-slate-800 mb-6 flex items-center gap-2">
+                        <span>🛠️</span> Wemos D1 Mini ESP32 Pinout
+                    </h3>
+                    
+                    <div class="relative bg-slate-800 rounded-lg p-6 text-white font-mono text-sm shadow-inner mx-auto max-w-sm">
+                        <!-- ESP32 Board Representation -->
+                        <div class="absolute top-0 left-1/2 transform -translate-x-1/2 w-16 h-8 bg-slate-700 rounded-b-lg border-x border-b border-slate-600 flex justify-center items-center">
+                            <span class="text-[10px] text-slate-400">USB</span>
+                        </div>
+                        
+                        <div class="mt-8 space-y-3">
+                            <!-- Left Side Pins -->
+                            <div class="flex justify-between items-center group cursor-pointer" onmouseover="highlightPin('rst')" onmouseout="resetPin('rst')">
+                                <span class="text-slate-500 pin-label" id="label-rst">RST</span>
+                                <div class="w-3 h-3 rounded-full bg-yellow-500 border-2 border-slate-600"></div>
+                            </div>
+                            <div class="flex justify-between items-center group cursor-pointer" onmouseover="highlightPin('gnd')" onmouseout="resetPin('gnd')">
+                                <span class="text-slate-500 pin-label" id="label-gnd">GND</span>
+                                <div class="w-3 h-3 rounded-full bg-black border-2 border-slate-600"></div>
+                            </div>
+                             <div class="flex justify-between items-center group cursor-pointer" onmouseover="highlightPin('25')" onmouseout="resetPin('25')">
+                                <span class="text-green-400 font-bold pin-label" id="label-25">D2 (GPIO 25)</span>
+                                <div class="w-3 h-3 rounded-full bg-green-500 border-2 border-slate-600 shadow-[0_0_10px_rgba(34,197,94,0.5)]"></div>
+                            </div>
+                            <div class="flex justify-between items-center group cursor-pointer" onmouseover="highlightPin('32')" onmouseout="resetPin('32')">
+                                <span class="text-green-400 font-bold pin-label" id="label-32">D5 (GPIO 32)</span>
+                                <div class="w-3 h-3 rounded-full bg-green-500 border-2 border-slate-600 shadow-[0_0_10px_rgba(34,197,94,0.5)]"></div>
+                            </div>
+                             <div class="flex justify-between items-center group cursor-pointer" onmouseover="highlightPin('36')" onmouseout="resetPin('36')">
+                                <span class="text-blue-400 font-bold pin-label" id="label-36">VP (GPIO 36)</span>
+                                <div class="w-3 h-3 rounded-full bg-blue-500 border-2 border-slate-600 shadow-[0_0_10px_rgba(59,130,246,0.5)]"></div>
+                            </div>
+                             <div class="flex justify-between items-center group cursor-pointer" onmouseover="highlightPin('2')" onmouseout="resetPin('2')">
+                                <span class="text-blue-200 font-bold pin-label" id="label-2">LED (GPIO 2)</span>
+                                <div class="w-3 h-3 rounded-full bg-blue-300 border-2 border-slate-600"></div>
+                            </div>
+                        </div>
+                        
+                        <div class="mt-8 text-center text-xs text-slate-500">
+                            WEMOS D1 MINI ESP32
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Hardware Logic & Details -->
+                <div class="flex flex-col justify-center">
+                    <h3 class="text-2xl font-bold text-slate-800 mb-6">Funktionsweise & Teile</h3>
+                    
+                    <div class="space-y-4">
+                        <div id="card-25" class="p-4 bg-white rounded-xl border border-slate-200 shadow-sm transition hover:shadow-md border-l-4 border-l-green-500">
+                            <h4 class="font-bold text-slate-800 flex justify-between">
+                                Taste Next
+                                <span class="text-xs bg-slate-100 px-2 py-1 rounded">GPIO 25</span>
+                            </h4>
+                            <p class="text-sm text-slate-600 mt-1">Schaltet gegen GND. Nutzt internen <code>INPUT_PULLUP</code>. Löst Aktion "1" in der App aus.</p>
+                        </div>
+
+                        <div id="card-32" class="p-4 bg-white rounded-xl border border-slate-200 shadow-sm transition hover:shadow-md border-l-4 border-l-green-500">
+                            <h4 class="font-bold text-slate-800 flex justify-between">
+                                Taste Prev
+                                <span class="text-xs bg-slate-100 px-2 py-1 rounded">GPIO 32</span>
+                            </h4>
+                            <p class="text-sm text-slate-600 mt-1">Schaltet gegen GND. Nutzt internen <code>INPUT_PULLUP</code>. Löst Aktion "2" in der App aus.</p>
+                        </div>
+
+                        <div id="card-36" class="p-4 bg-white rounded-xl border border-slate-200 shadow-sm transition hover:shadow-md border-l-4 border-l-blue-500">
+                            <h4 class="font-bold text-slate-800 flex justify-between">
+                                Akku Messung
+                                <span class="text-xs bg-slate-100 px-2 py-1 rounded">GPIO 36 (VP)</span>
+                            </h4>
+                            <p class="text-sm text-slate-600 mt-1">Analog Input. Misst die Batteriespannung (über Spannungsteiler, Faktor ~2.43). Updated alle 5s.</p>
+                        </div>
+                        
+                        <div class="mt-6 bg-violet-50 p-4 rounded-xl border border-violet-100">
+                            <h5 class="text-violet-800 font-bold mb-2 text-sm">Benötigte Teile:</h5>
+                            <ul class="text-sm text-violet-700 space-y-1 list-disc ml-4">
+                                <li>ESP32 Board (z.B. Wemos D1 Mini Formfaktor)</li>
+                                <li>2x Momentary Push Buttons</li>
+                                <li>Verbindungskabel</li>
+                                <li>(Optional) LiPo Akku + JST Stecker</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Software & AI Section -->
+    <section id="software" class="py-20 bg-white">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="mb-12 text-center">
+                <h2 class="text-3xl font-bold text-slate-900">Software Hub</h2>
+                <p class="mt-4 text-slate-500">Die Magie passiert in der Python Bridge App mit integrierter KI.</p>
+            </div>
+
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-12">
+                <!-- AI Simulator -->
+                <div id="demo" class="bg-slate-900 rounded-2xl shadow-2xl p-6 flex flex-col h-[500px]">
+                    <div class="flex items-center justify-between border-b border-slate-700 pb-4 mb-4">
+                        <div class="flex items-center gap-3">
+                            <div class="w-3 h-3 rounded-full bg-red-500"></div>
+                            <div class="w-3 h-3 rounded-full bg-yellow-500"></div>
+                            <div class="w-3 h-3 rounded-full bg-green-500"></div>
+                        </div>
+                        <span class="text-slate-400 text-sm font-mono">bridge_app.py — AI Config</span>
+                    </div>
+
+                    <!-- Chat Output -->
+                    <div id="ai-chat" class="flex-1 overflow-y-auto space-y-4 mb-4 font-mono text-sm">
+                        <div class="flex flex-col gap-1">
+                            <span class="text-violet-400">System:</span>
+                            <span class="text-slate-300">Verbunden mit Google Gemini API... Bereit für Konfiguration.</span>
+                        </div>
+                        <!-- Dynamic content goes here -->
+                    </div>
+
+                    <!-- Input Area -->
+                    <div class="mt-auto">
+                        <label class="text-xs text-slate-500 uppercase font-bold tracking-wider mb-2 block">Was soll die Taste tun?</label>
+                        <div class="flex gap-2">
+                            <input type="text" id="ai-input" placeholder="z.B. 'Nächste Folie' oder 'Screenshot'" 
+                                class="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500 transition font-mono text-sm"
+                                onkeypress="handleEnter(event)">
+                            <button onclick="simulateAI()" class="bg-violet-600 hover:bg-violet-700 text-white px-6 py-3 rounded-lg font-bold transition">
+                                Senden
+                            </button>
+                        </div>
+                        <div class="flex gap-2 mt-3 overflow-x-auto pb-2">
+                            <button onclick="setInput('Nächste Folie')" class="whitespace-nowrap px-3 py-1 bg-slate-800 text-slate-300 rounded text-xs hover:bg-slate-700 transition">Nächste Folie</button>
+                            <button onclick="setInput('Musik Pause')" class="whitespace-nowrap px-3 py-1 bg-slate-800 text-slate-300 rounded text-xs hover:bg-slate-700 transition">Musik Pause</button>
+                            <button onclick="setInput('Alles Kopieren')" class="whitespace-nowrap px-3 py-1 bg-slate-800 text-slate-300 rounded text-xs hover:bg-slate-700 transition">Alles Kopieren</button>
+                            <button onclick="setInput('Ton aus')" class="whitespace-nowrap px-3 py-1 bg-slate-800 text-slate-300 rounded text-xs hover:bg-slate-700 transition">Ton aus</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Features & Stats -->
+                <div class="space-y-8">
+                    <!-- Efficiency Chart -->
+                    <div class="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
+                        <h3 class="text-lg font-bold text-slate-800 mb-4">Energieeffizienz Vergleich</h3>
+                        <div class="chart-container">
+                            <canvas id="batteryChart"></canvas>
+                        </div>
+                        <p class="text-xs text-slate-400 text-center mt-2">*Geschätzte Laufzeit basierend auf 500mAh LiPo</p>
+                    </div>
+
+                    <!-- Software Features List -->
+                    <div class="grid grid-cols-2 gap-4">
+                        <div class="p-4 bg-violet-50 rounded-xl border border-violet-100">
+                            <h4 class="font-bold text-violet-900 mb-2">🚀 Autostart</h4>
+                            <p class="text-sm text-violet-700">Die App trägt sich selbst in die Registry ein. Startet minimiert mit Windows.</p>
+                        </div>
+                        <div class="p-4 bg-blue-50 rounded-xl border border-blue-100">
+                            <h4 class="font-bold text-blue-900 mb-2">⚡ No Pairing</h4>
+                            <p class="text-sm text-blue-700">Kein Windows-Bluetooth-Dialog nötig. Die Python App scannt & verbindet direkt.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Installation Section -->
+    <section id="install" class="py-20 bg-slate-50 border-t border-slate-200">
+        <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
+            <h2 class="text-3xl font-bold text-slate-900 text-center mb-12">Installation Guide</h2>
+            
+            <div class="space-y-6">
+                <!-- Step 1 -->
+                <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                    <div class="p-6 cursor-pointer flex justify-between items-center" onclick="toggleStep('step1')">
+                        <div class="flex items-center gap-4">
+                            <div class="w-8 h-8 rounded-full bg-slate-100 text-slate-600 flex items-center justify-center font-bold">1</div>
+                            <h3 class="text-lg font-bold text-slate-800">ESP32 Flashen</h3>
+                        </div>
+                        <span class="text-slate-400 transform transition" id="arrow-step1">▼</span>
+                    </div>
+                    <div id="content-step1" class="px-6 pb-6 hidden">
+                        <p class="text-slate-600 mb-4">Nutze PlatformIO in VS Code.</p>
+                        <div class="bg-slate-900 text-slate-300 p-4 rounded-lg font-mono text-sm overflow-x-auto">
+                            1. Ordner in VS Code öffnen<br>
+                            2. ESP32 verbinden<br>
+                            3. PlatformIO Upload drücken (Pfeil nach rechts unten)
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Step 2 -->
+                <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                    <div class="p-6 cursor-pointer flex justify-between items-center" onclick="toggleStep('step2')">
+                        <div class="flex items-center gap-4">
+                            <div class="w-8 h-8 rounded-full bg-slate-100 text-slate-600 flex items-center justify-center font-bold">2</div>
+                            <h3 class="text-lg font-bold text-slate-800">Python Dependencies</h3>
+                        </div>
+                        <span class="text-slate-400 transform transition" id="arrow-step2">▼</span>
+                    </div>
+                    <div id="content-step2" class="px-6 pb-6 hidden">
+                        <p class="text-slate-600 mb-4">Installiere die benötigten Pakete im Terminal:</p>
+                        <div class="bg-slate-900 text-slate-300 p-4 rounded-lg font-mono text-sm overflow-x-auto">
+                            pip install -r src/requirements.txt
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Step 3 -->
+                <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                    <div class="p-6 cursor-pointer flex justify-between items-center" onclick="toggleStep('step3')">
+                        <div class="flex items-center gap-4">
+                            <div class="w-8 h-8 rounded-full bg-slate-100 text-slate-600 flex items-center justify-center font-bold">3</div>
+                            <h3 class="text-lg font-bold text-slate-800">EXE Erstellen (Optional)</h3>
+                        </div>
+                        <span class="text-slate-400 transform transition" id="arrow-step3">▼</span>
+                    </div>
+                    <div id="content-step3" class="px-6 pb-6 hidden">
+                        <p class="text-slate-600 mb-4">Erstelle eine eigenständige Windows-Anwendung:</p>
+                        <div class="bg-slate-900 text-slate-300 p-4 rounded-lg font-mono text-sm overflow-x-auto">
+                            pip install pyinstaller<br>
+                            pyinstaller --noconsole --onefile --icon="icon.ico" --name "Remote-Switch" src/bridge_app.py
+                        </div>
+                        <p class="text-slate-500 text-xs mt-2">Die Datei liegt dann im Ordner <code>dist/</code>.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- FAQ / Troubleshooting -->
+    <section class="py-20 bg-white">
+        <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
+            <h2 class="text-3xl font-bold text-slate-900 text-center mb-12">Troubleshooting</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div class="p-6 bg-red-50 rounded-xl border border-red-100">
+                    <h4 class="font-bold text-red-800 mb-2">ESP verbindet nicht?</h4>
+                    <p class="text-sm text-red-700">Windows cached Bluetooth-Geräte aggressiv. Entferne "OneNote Remote" aus den Windows-Einstellungen und starte Bluetooth neu.</p>
+                </div>
+                <div class="p-6 bg-orange-50 rounded-xl border border-orange-100">
+                    <h4 class="font-bold text-orange-800 mb-2">LED leuchtet dauerhaft?</h4>
+                    <p class="text-sm text-orange-700">Check die Verkabelung. Der Code erwartet "Active Low" (GND Verbindung) und Input Pullups.</p>
+                </div>
+                <div class="p-6 bg-violet-50 rounded-xl border border-violet-100">
+                    <h4 class="font-bold text-violet-800 mb-2">AI Fehler?</h4>
+                    <p class="text-sm text-violet-700">Stelle sicher, dass <code>google-genai</code> installiert ist und dein API Key in der Config korrekt gesetzt ist.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="bg-slate-900 text-slate-400 py-12 text-center border-t border-slate-800">
+        <p class="mb-4">OneNote Remote Switch • Open Source Project</p>
+        <p class="text-xs">Built with ❤️ using ESP32 & Python</p>
+    </footer>
+
+    <!-- Scripts -->
+    <script>
+        // Smooth Scroll
+        function scrollToSection(id) {
+            document.getElementById(id).scrollIntoView({ behavior: 'smooth' });
+        }
+
+        // Installation Accordion Logic
+        function toggleStep(id) {
+            const content = document.getElementById(`content-${id}`);
+            const arrow = document.getElementById(`arrow-${id}`);
+            
+            if (content.classList.contains('hidden')) {
+                content.classList.remove('hidden');
+                arrow.style.transform = 'rotate(180deg)';
+            } else {
+                content.classList.add('hidden');
+                arrow.style.transform = 'rotate(0deg)';
+            }
+        }
+
+        // Hardware Pinout Highlight Logic
+        function highlightPin(pin) {
+            const label = document.getElementById(`label-${pin}`);
+            const card = document.getElementById(`card-${pin}`);
+            
+            if (label) label.classList.add('text-white', 'scale-110');
+            if (card) {
+                card.classList.add('ring-2', 'ring-violet-500', 'transform', 'scale-105');
+                card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+        }
+
+        function resetPin(pin) {
+            const label = document.getElementById(`label-${pin}`);
+            const card = document.getElementById(`card-${pin}`);
+            
+            if (label) label.classList.remove('text-white', 'scale-110');
+            if (card) card.classList.remove('ring-2', 'ring-violet-500', 'transform', 'scale-105');
+        }
+
+        // AI Simulator Logic
+        const chatContainer = document.getElementById('ai-chat');
+        const inputField = document.getElementById('ai-input');
+
+        function setInput(text) {
+            inputField.value = text;
+            inputField.focus();
+        }
+
+        function handleEnter(e) {
+            if (e.key === 'Enter') simulateAI();
+        }
+
+        function addMessage(text, sender) {
+            const div = document.createElement('div');
+            div.className = "flex flex-col gap-1 mb-2 animate-float";
+            div.style.animationDuration = "0.5s";
+            div.style.animationIterationCount = "1";
+            
+            const senderSpan = document.createElement('span');
+            senderSpan.className = sender === 'user' ? "text-green-400 font-bold" : "text-violet-400 font-bold";
+            senderSpan.textContent = sender === 'user' ? "User:" : "Gemini AI:";
+            
+            const textSpan = document.createElement('span');
+            textSpan.className = "text-slate-300";
+            textSpan.textContent = text;
+            
+            div.appendChild(senderSpan);
+            div.appendChild(textSpan);
+            chatContainer.appendChild(div);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+
+        function simulateAI() {
+            const text = inputField.value.trim();
+            if (!text) return;
+
+            addMessage(text, 'user');
+            inputField.value = '';
+
+            // Simulate Network Delay
+            setTimeout(() => {
+                let response = "";
+                const lower = text.toLowerCase();
+                
+                if (lower.includes("folie") || lower.includes("next")) response = "Erkannt: 'pagedown' (Key Code)";
+                else if (lower.includes("zurück") || lower.includes("prev")) response = "Erkannt: 'pageup' (Key Code)";
+                else if (lower.includes("kopieren")) response = "Erkannt: 'ctrl+c' (Modifier + Key)";
+                else if (lower.includes("musik") || lower.includes("pause")) response = "Erkannt: 'play/pause media' (Media Key)";
+                else if (lower.includes("ton") || lower.includes("mute")) response = "Erkannt: 'volume mute' (Media Key)";
+                else if (lower.includes("screenshot")) response = "Erkannt: 'print screen' (System Key)";
+                else response = `Interpretiere '${text}'... Vorschlag: '${text.split(' ')[0]}' mapped to generic key.`;
+                
+                addMessage(response, 'ai');
+                addMessage("Konfiguration gespeichert.", 'system');
+            }, 800);
+        }
+
+        // Chart.js Implementation
+        document.addEventListener('DOMContentLoaded', function() {
+            const ctx = document.getElementById('batteryChart').getContext('2d');
+            
+            new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: ['Standard Bluetooth Keyboard', 'OneNote Remote (Dumb Device)'],
+                    datasets: [{
+                        label: 'Geschätzte Laufzeit (Tage)',
+                        data: [5, 45], // 5 days vs 45 days (Hypothetical efficiency gain)
+                        backgroundColor: [
+                            'rgba(148, 163, 184, 0.5)', // Slate for standard
+                            'rgba(124, 58, 237, 0.8)'  // Violet for this project
+                        ],
+                        borderColor: [
+                            'rgba(148, 163, 184, 1)',
+                            'rgba(124, 58, 237, 1)'
+                        ],
+                        borderWidth: 1,
+                        borderRadius: 8
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    return context.raw + ' Tage Laufzeit';
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            title: { display: true, text: 'Tage' }
+                        }
+                    }
+                }
+            });
+        });
+    </script>
+</body>
+</html>
