@@ -4,7 +4,6 @@
 .vscode/launch.json
 .vscode/ipch
 .vscode
-test
 include/README.mdl
 lib/README.mdl
 remote_config.json
