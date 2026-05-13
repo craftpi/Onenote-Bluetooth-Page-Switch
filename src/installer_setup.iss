@@ -22,6 +22,7 @@ WizardStyle=modern
 UninstallDisplayIcon={app}\{#MyAppExeName}
 PrivilegesRequired=lowest
 SetupIconFile=src\icon.ico
+SignTool=WinSigntool
 
 [Languages]
 Name: "german"; MessagesFile: "compiler:Languages\German.isl"
